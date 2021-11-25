@@ -7,7 +7,6 @@ import asyncio
 #from pythonosc import udp_client
 from osc4py3.as_eventloop import *
 from osc4py3 import oscbuildparse, oscchannel
-from sync import sync
 
 from server import Server, addrMap
 from serverprocess import ServerProcess

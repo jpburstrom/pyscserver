@@ -2,7 +2,6 @@ from osc4py3.as_eventloop import *
 from osc4py3 import oscbuildparse, oscchannel
 import asyncio
 import time
-from sync import syncHandler
 #from .exceptions import SuperColliderConnectionError
 
 RESPONSE_TIMEOUT = 0.25
@@ -101,11 +100,13 @@ class Server(object):
 
         #Get port of sending socket, and use it to create a receiving server
         recvPort = oscchannel.get_channel(self.sendID).udpsock.getsockname()[1];
+        print(recvPort)
         osc_udp_server("127.0.0.1", recvPort, self.recvID)
 
         osc_method('/synced', self.syncHandler)
 
     def syncHandler(self, *args):
+        print("incoming sync %d" % args[0])
         for id, ev in self.syncIDs.items():
             if (args[0] == id):
                 ev.set()
