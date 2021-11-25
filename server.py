@@ -109,8 +109,8 @@ class Server(object):
         print("incoming sync %d" % args[0])
         for id, ev in self.syncIDs.items():
             if (args[0] == id):
-                ev.set()
                 self.syncIDs.pop(id)
+                ev.set()
 
     def send_msg(self, addr, msg, types=None):
         """Send OSC message immediately"""
@@ -131,11 +131,12 @@ class Server(object):
 
     async def sync(self, timeout=1):
         id = next(self.syncID)
-        self.syncIDs[id] = asyncio.Event()
+        ev = asyncio.Event()
+        self.syncIDs[id] = ev
         msg = oscbuildparse.OSCMessage('/sync', None, [id])
         osc_send(msg, self.sendID)
         osc_process()
-        await asyncio.wait_for(self.syncIDs[id].wait(), timeout=timeout)
+        await asyncio.wait_for(ev.wait(), timeout=timeout)
 
     async def bootSync(self, timeout=20):
         while True:
