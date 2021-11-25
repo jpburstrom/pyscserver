@@ -93,7 +93,7 @@ if __name__ == '__main__':
     subprocess.run(["killall", "scsynth"])
 
     loop = asyncio.get_event_loop()
-    scsynth = ServerProcess(blockSize=16, executable="/Users/johannes/bin/scsynth")
+    scsynth = ServerProcess(blockSize=16)
     osctask = loop.create_task(poll())
     servertask = loop.create_task(scsynth.start_async())
     server = Server()
@@ -107,5 +107,8 @@ if __name__ == '__main__':
     #Attach to scsynth and
     loop.run_until_complete(servertask)
 
+    osctask.cancel()
+
     loop.run_until_complete(stop_loop())
+    loop.close()
     osc_terminate()
