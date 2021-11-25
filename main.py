@@ -3,178 +3,110 @@
 import time
 import subprocess
 import json
+import asyncio
 #from pythonosc import udp_client
 from osc4py3.as_eventloop import *
 from osc4py3 import oscbuildparse, oscchannel
+from sync import sync
 
-addrMap = {
-        0: '/none',
-        1: '/notify',
-        2: '/status',
-        3: '/quit',
-        4: '/cmd',
-        5: '/d_recv',
-        6: '/d_load',
-        7: '/d_loadDir',
-        8: '/d_freeAll',
-        9: '/s_new',
-        10: '/n_trace',
-        11: '/n_free',
-        12: '/n_run',
-        13: '/n_cmd',
-        14: '/n_map',
-        15: '/n_set',
-        16: '/n_setn',
-        17: '/n_fill',
-        18: '/n_before',
-        19: '/n_after',
-        20: '/u_cmd',
-        21: '/g_new',
-        22: '/g_head',
-        23: '/g_tail',
-        24: '/g_freeAll',
-        25: '/c_set',
-        26: '/c_setn',
-        27: '/c_fill',
-        28: '/b_alloc',
-        29: '/b_allocRead',
-        30: '/b_read',
-        31: '/b_write',
-        32: '/b_free',
-        33: '/b_close',
-        34: '/b_zero',
-        35: '/b_set',
-        36: '/b_setn',
-        37: '/b_fill',
-        38: '/b_gen',
-        39: '/dumpOSC',
-        40: '/c_get',
-        41: '/c_getn',
-        42: '/b_get',
-        43: '/b_getn',
-        44: '/s_get',
-        45: '/s_getn',
-        46: '/n_query',
-        47: '/b_query',
-        48: '/n_mapn',
-        49: '/s_noid',
-        50: '/g_deepFree',
-        51: '/clearSched',
-        52: '/sync',
-        53: '/d_free',
-        54: '/b_allocReadChannel',
-        55: '/b_readChannel',
-        56: '/g_dumpTree',
-        57: '/g_queryTree',
-        58: '/error',
-        59: '/s_newargs',
-        60: '/n_mapa',
-        61: '/n_mapan',
-        62: '/n_order',
-        63: '/p_new',
-        64: '/version',
-}
+from server import Server, addrMap
+from serverprocess import ServerProcess
 
-def syncHandler(*args):
-    print(args)
-    print("synced")
+osc_poll_time = 0.1
 
 class Score:
-    def __init__(self, path, server="sc"):
+    def __init__(self, path):
         #TODO error handling
         with open(path) as file:
             self.score = json.load(file)
         self.bundle = []
-        self.receiver = "sc" #osc4py3 handle
         self.curTime = 0 # Time relative to score start
         self.scoreActions = {
-            '/d_recv': self.msg_d_recv
+            '/d_recv': self.msg_d_completion,
+            '/d_load': self.msg_d_completion,
+            '/d_loadDir': self.msg_d_completion,
+            'syncFlag': self.msg_sync,
+            '/sync': self.msg_sync
         }
+        #This is set in the play method
+        self._server = None
 
-    def send_msg(self, addr, msg, types=None):
-        """Send OSC message immediately"""
-        osc_send(oscbuildparse.OSCMessage(addr, types, msg), self.receiver)
-        osc_process()
-
-    def bundle_add(self, addr, msg):
-        self.bundle.append(oscbuildparse.OSCMessage(addr, None, msg))
+    def msg_sync(self, addr, args):
+        """Process"""
+        self.send_bundle() #Send and clear any stray messages
+        #Block until complete
+        asyncio.get_event_loop().run_until_complete(self._server.sync()) #block further processing
 
     def msg_default(self, addr, args):
         """Format and send message, default method"""
         self.bundle_add(addr, args)
 
-    def msg_d_recv(self, addr, args):
-        """Format and send /d_recv message"""
+    def msg_d_completion(self, addr, args):
+        """Format and send /d_* message with completion function"""
         try:
-            completionMsg = oscbuildparse.encode_packet(oscbuildparse.OSCMessage(args[1][0], None, args[1][1:]))
+            c_addr = self.int_to_addr(args[1][0]) # addr of completion message
+            completionMsg = oscbuildparse.encode_packet(oscbuildparse.OSCMessage(c_addr, None, args[1][1:]))
         except TypeError:
             completionMsg = None
-        self.send_msg(addr, [bytes([x + 128 for x in args[0]]), completionMsg])
+        self._server.send_msg(addr, [bytes([(x + 256) % 256 for x in args[0]]), completionMsg])
 
-    def play(self):
+    def play(self, server):
+        self._server = server
         self.oscStartTime = oscbuildparse.unixtime2timetag(time.time())
         for item in self.score:
             self.process_row(item)
             self.send_bundle()
 
+    def int_to_addr(self, addr):
+        try:
+            addr = addrMap[addr]
+        except KeyError:
+            pass
+        return addr
+
     def process_row(self, item):
         """Process a single score row."""
 
-        #self.maybe_send_bundle(item[0])
         self.curTime = item[0]
-        message = item[1] # message format: [addr, arg1, arg2..]
-        try:
-            addr = addrMap[message[0]]
-        except KeyError:
-            addr = message[0]
-        self.scoreActions.get(addr, self.msg_default)(addr, message[1:])
+        for message in item[1:]:
+            addr = self.int_to_addr(message[0])
+            self.scoreActions.get(addr, self.msg_default)(addr, message[1:])
 
-    def maybe_send_bundle(self, time):
-        """Send bundle if provided time is more than current time."""
-
-        if time > self.curTime:
-            self.send_bundle()
+    def bundle_add(self, addr, msg):
+        """Add message to current bundle"""
+        self._server.bundle_add(addr, msg, self.bundle)
 
     def send_bundle(self):
         if self.bundle:
-            osc_send(oscbuildparse.OSCBundle(self.oscStartTime + self.curTime, self.bundle), self.receiver)
-            osc_process()
-            self.bundle = []
+            self._server.send_bundle(self.oscStartTime + self.curTime, self.bundle)
+        self.bundle.clear()
 
+async def poll():
+    while 1:
+        osc_process()
+        await asyncio.sleep(osc_poll_time)
 
-
+async def stop_loop():
+    asyncio.get_event_loop().stop()
 
 if __name__ == '__main__':
 
-    osc_startup()
-    #SuperCollider server
-    osc_udp_client("127.0.0.1", 57110, "sc");
+    subprocess.run(["killall", "scsynth"])
 
-    #Get port of sending socket, and use it to create a receiving server
-    recvPort = oscchannel.get_channel("sc").udpsock.getsockname()[1];
-    osc_udp_server("127.0.0.1", recvPort, "this")
-
-    #Then we can use sync messages - this is a test
-    #TODO implement sync in Score class
-    osc_method("/synced", syncHandler)
-    msg = oscbuildparse.OSCMessage('/sync', None, [1])
-
-
-    scsynth = subprocess.Popen([ "/Users/johannes/bin/scsynth", "-u", "57110", "-a", "1024", "-i", "2", "-o", "2", "-R", "0", "-C", "1", "-l", "2", "-s", "1.26" ])
-    #TODO Wait for boot
-    #Send /notify repeatedly, wait for answer
-    #Send init tree
-    #play score
-
+    loop = asyncio.get_event_loop()
+    scsynth = ServerProcess(blockSize=16, executable="/Users/johannes/bin/scsynth")
+    osctask = loop.create_task(poll())
+    servertask = loop.create_task(scsynth.start_async())
+    server = Server()
+    server.waitForBoot()
+    print("Server booted!")
+    server.send_msg('/g_new', [1])
+    server.send_msg('/g_dumpTree', [0])
     score = Score("test.json")
-    score.play()
+    score.play(server)
 
-    finished = False
-    while not finished:
-        osc_process()
-        if scsynth.poll() is not None:
-            finished = True
-        time.sleep(0.05)
+    #Attach to scsynth and
+    loop.run_until_complete(servertask)
 
+    loop.run_until_complete(stop_loop())
     osc_terminate()
-
